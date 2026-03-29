@@ -1,91 +1,237 @@
-# autoresearch
+# autoresearch (Thesis Adaptation Blueprint)
 
 ![teaser](progress.png)
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+本仓库当前代码仍是极简 `prepare.py + train.py + program.md` 研究循环；本文档将其重定义为：
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069) and [this tweet](https://x.com/karpathy/status/2031135152349524125).
+> 一个用于毕业设计的 **自动实验引擎（Auto-Experiment Engine）**，用于围绕本地 Qwen 主模型、外部 AI 协同、个性化知识库/RAG、LoRA 自我迭代和评测脚本进行可复现实验。
 
-## How it works
+---
 
-The repo is deliberately kept small and only really has three files that matter:
+## 1. Thesis-oriented target
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads training data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation). Not modified.
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
+你要自动化的不是“整个系统从零开发”，而是以下可量化研究任务：
 
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
+1. **RAG 自动优化**：检索参数、提示词、证据格式自动搜索。
+2. **SFT 数据构造优化**：知识抽取模板、过滤规则、样本配比自动迭代。
+3. **QLoRA 短时自迭代**：在单卡（RTX 4090）约束下自动寻找更好的 adapter 配置。
+4. **统一评测与晋级**：固定评测集 + 固定评分函数 + 晋级/回滚机制。
+5. **可复现实验配置**：固定随机种子、固定数据切分、固定运行时预算。
 
-If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/status/2030720614752039185) looks pretty good for a lot more context.
+---
 
-## Quick start
+## 2. Recommended repository layout
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+```text
+programs/
+  rag.md
+  sft.md
+  qlora.md
 
-```bash
+editable/
+  rag_candidate.py
+  prompt_candidate.py
+  sft_rules_candidate.py
+  qlora_candidate.py
 
-# 1. Install uv project manager (if you don't already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+core/
+  runner_rag.py
+  runner_sft.py
+  runner_qlora.py
+  metrics.py
+  promote.py
+  logger.py
 
-# 2. Install dependencies
-uv sync
+knowledge/
+  personal_kb/              # 本地个性化知识（结构化/非结构化）
 
-# 3. Download data and train tokenizer (one-time, ~2 min)
-uv run prepare.py
+models/
+  base/                     # Qwen 基座模型（只读）
+  adapters/                 # LoRA adapters
 
-# 4. Manually run a single training experiment (~5 min)
-uv run train.py
+eval/
+  evalset_personal.jsonl
+  evalset_project.jsonl
+  evalset_procedure.jsonl
+
+artifacts/
+logs/
+results/
+SAFE_EDIT_ALLOWLIST.txt
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
+---
 
-## Running the agent
+## 3. Hard constraints (must enforce)
 
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+- 单 GPU（RTX 4090）
+- 主模型固定：`Qwen/Qwen2.5-7B-Instruct`
+- 禁止全参数微调（仅 LoRA/QLoRA）
+- 单次训练实验时长 `<= 15 min`
+- `max_seq_length <= 1024`
+- 仅允许编辑白名单文件（`SAFE_EDIT_ALLOWLIST.txt`）
+- 不改数据库 schema、不改线上 API 协议
 
+建议白名单：
+
+```text
+editable/rag_candidate.py
+editable/prompt_candidate.py
+editable/sft_rules_candidate.py
+editable/qlora_candidate.py
+programs/
 ```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
+
+---
+
+## 4. Multi-model collaboration strategy
+
+### 4.1 Local primary model (must)
+
+- 本地主模型：Qwen（负责推理、RAG 回答、SFT/LoRA 的目标模型）。
+
+### 4.2 External AI collaborators (optional but controlled)
+
+外部 AI 仅用于“辅助信号”，不直接替代主模型决策：
+
+- 辅助重写 query（query rewrite）
+- 候选答案对比投票（judge/rerank）
+- 数据清洗建议（规则候选）
+
+要求：
+
+- 每次调用需记录 provider/model/temperature/token 用量到 `logs/`。
+- 外部 AI 输出必须可追溯，不可直接覆盖 gold 评测集。
+
+---
+
+## 5. Personalized KB & RAG pipeline
+
+1. 用户资料、项目资料、流程资料进入 `knowledge/personal_kb/`。
+2. 固定切分/索引参数建立向量库（建议 FAISS + metadata）。
+3. `editable/rag_candidate.py` 决定候选配置：
+   - `top_k`
+   - `chunk_size`
+   - `overlap`
+   - metadata filter
+   - rerank 开关
+4. `editable/prompt_candidate.py` 负责回答格式和证据引用模板。
+5. `core/runner_rag.py` 在固定评测集上输出 `results/latest_rag_metrics.json`。
+
+---
+
+## 6. LoRA self-iteration policy
+
+在 `editable/qlora_candidate.py` 内限制搜索空间：
+
+```python
+BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+SEARCH_SPACE = {
+    "lora_r": [8, 16, 32],
+    "lora_alpha": [16, 32, 64],
+    "lora_dropout": [0.0, 0.05, 0.1],
+    "learning_rate": [1e-4, 2e-4, 3e-4],
+    "max_seq_length": [512, 1024],
+    "gradient_accumulation_steps": [8, 16, 32],
+}
 ```
 
-The `program.md` file is essentially a super lightweight "skill".
+禁止项：
 
-## Project structure
+- 切换到 14B+
+- 全参数微调
+- `max_seq_length > 1024`
+- 删除历史最优 adapter
 
+`core/runner_qlora.py` 每次只保存 adapter，并记录：
+
+- 训练配置哈希
+- 训练/验证分数
+- 显存峰值
+- 训练时长
+
+---
+
+## 7. Unified metrics and promotion gate
+
+建议在 `core/metrics.py` 定义统一总分：
+
+```python
+def total_score(metrics):
+    return (
+        0.40 * metrics["answer_correctness"]
+        + 0.25 * metrics["evidence_hit_rate"]
+        + 0.20 * metrics["preference_consistency"]
+        + 0.10 * metrics["format_pass_rate"]
+        - 0.05 * metrics["latency_penalty"]
+    )
 ```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
+
+`core/promote.py` 规则：
+
+```python
+if new_score > best_score + 0.01 and metrics["evidence_hit_rate"] >= best_evidence:
+    promote()
+else:
+    rollback()
 ```
 
-## Design choices
+并限制：仅保留最近 N=20 次实验快照。
 
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
+---
 
-## Platform support
+## 8. Reproducible experiment protocol
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+每次实验必须固化：
 
-Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
+- git commit hash
+- 数据集版本号/切分版本号
+- 随机种子
+- 依赖版本（`uv.lock`）
+- GPU/驱动/CUDA 信息
+- 运行命令
+- 指标 JSON 与日志路径
 
-1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
-2. You might experiment with decreasing `vocab_size`, e.g. from 8192 down to 4096, 2048, 1024, or even - simply byte-level tokenizer with 256 possibly bytes after utf-8 encoding.
-3. In `prepare.py`, you'll want to lower `MAX_SEQ_LEN` a lot, depending on the computer even down to 256 etc. As you lower `MAX_SEQ_LEN`, you may want to experiment with increasing `DEVICE_BATCH_SIZE` in `train.py` slightly to compensate. The number of tokens per fwd/bwd pass is the product of these two.
-4. Also in `prepare.py`, you'll want to decrease `EVAL_TOKENS` so that your validation loss is evaluated on a lot less data.
-5. In `train.py`, the primary single knob that controls model complexity is the `DEPTH` (default 8, here). A lot of variables are just functions of this, so e.g. lower it down to e.g. 4.
-6. You'll want to most likely use `WINDOW_PATTERN` of just "L", because "SSSL" uses alternating banded attention pattern that may be very inefficient for you. Try it.
-7. You'll want to lower `TOTAL_BATCH_SIZE` a lot, but keep it powers of 2, e.g. down to `2**14` (~16K) or so even, hard to tell.
+建议追加 `results.tsv` 字段：
 
-I think these would be the reasonable hyperparameters to play with. Ask your favorite coding agent for help and copy paste them this guide, as well as the full source code.
+```text
+commit	run_type	score	main_metric	memory_gb	seconds	status	description
+```
 
-## Notable forks
+---
 
-- [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
-- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
-- [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
-- [andyluo7/autoresearch](https://github.com/andyluo7/autoresearch) (AMD)
+## 9. Migration path (3 phases)
+
+### Phase 1: RAG 自动实验（推荐先做）
+
+- 新增 `SAFE_EDIT_ALLOWLIST.txt`
+- 建立 `programs/rag.md`
+- 实现 `runner_rag.py + metrics.py`
+- 跑 20~50 轮候选组合
+
+### Phase 2: SFT 数据自动实验
+
+- 新增 `programs/sft.md`
+- 实现 `runner_sft.py`
+- 自动筛选样本构造规则
+
+### Phase 3: QLoRA 自动实验
+
+- 新增 `programs/qlora.md`
+- 实现 `runner_qlora.py`
+- 自动晋级最佳 adapter
+
+---
+
+## 10. What this framework is / is not
+
+**是**：自动实验员（bounded autonomous researcher）
+**不是**：自动全栈开发员（unbounded auto-builder）
+
+当你给它：清晰目标 + 明确边界 + 固定评测，它会很强；
+当你给它：开放式“帮我做完整系统”，它会失控且不可复现。
+
+---
 
 ## License
 
